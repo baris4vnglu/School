@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Doktor Asistanı</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>🩺 Doktor Asistanı</h1>
+    <span id="status" class="status">Bağlantı kontrol ediliyor…</span>
+  </header>
+
+  <main>
+    <section class="panel left">
+      <h2>1. Görüntü</h2>
+      <label id="dropzone" class="dropzone">
+        <input id="fileInput" type="file" accept="image/*" hidden>
+        <img id="preview" alt="" hidden>
+        <span id="dropText">Görüntüyü sürükleyin veya tıklayıp seçin<br><small>Röntgen, BT, MR, dermatoloji fotoğrafı, EKG…</small></span>
+      </label>
+
+      <h2>2. Hasta Bilgileri <small>(isteğe bağlı)</small></h2>
+      <div class="grid">
+        <label>Yaş <input id="age" type="number" min="0" max="120"></label>
+        <label>Cinsiyet
+          <select id="sex">
+            <option value="">—</option>
+            <option>Erkek</option>
+            <option>Kadın</option>
+          </select>
+        </label>
+      </div>
+      <label>Görüntü tipi
+        <select id="imageType">
+          <option value="">Belirtilmedi</option>
+          <option>Akciğer grafisi</option>
+          <option>Bilgisayarlı tomografi (BT)</option>
+          <option>Manyetik rezonans (MR)</option>
+          <option>Ultrason</option>
+          <option>Dermatoloji fotoğrafı</option>
+          <option>EKG</option>
+          <option>Diğer</option>
+        </select>
+      </label>
+      <label>Şikayet / Anamnez
+        <textarea id="history" rows="4" placeholder="Örn: 3 gündür ateş, öksürük, sağ yan ağrısı…"></textarea>
+      </label>
+
+      <button id="analyzeBtn" class="primary" disabled>Analiz Et</button>
+      <button id="resetBtn" class="secondary">Yeni Hasta</button>
+    </section>
+
+    <section class="panel right">
+      <h2>Asistan</h2>
+      <div id="chat" class="chat">
+        <div class="placeholder">Görüntü yükleyip <b>Analiz Et</b>'e basın. Ardından takip soruları sorabilirsiniz.</div>
+      </div>
+      <form id="chatForm" class="chat-form">
+        <input id="chatInput" placeholder="Takip sorusu yazın… (örn: Hangi antibiyotik önerirsin?)" disabled>
+        <button class="primary" disabled id="sendBtn">Gönder</button>
+      </form>
+      <p class="disclaimer">⚠️ Bu sistem yalnızca karar desteği sağlar. Tanı ve tedavi kararı hekime aittir.</p>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
