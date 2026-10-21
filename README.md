@@ -21,7 +21,14 @@ Tarayıcı (frontend/)  ──►  FastAPI (backend/app.py)  ──►  Ollama (
 - `backend/app.py` — `/api/chat` (Ollama'ya yönlendirir, yanıtı akış halinde döner) ve `/api/health`.
 - Doktor asistanının davranışı `backend/app.py` içindeki `SYSTEM_PROMPT` ile belirlenir.
 
-## Kurulum
+## Hızlı Başlangıç (tek tık)
+
+1. [Ollama](https://ollama.com/download) ve [Python 3.10+](https://www.python.org/downloads/) kurun.
+2. Bu klasörde **Windows:** `baslat.bat` dosyasına çift tıklayın · **Mac/Linux:** `./baslat.sh` çalıştırın.
+
+Script modeli indirir (ilk seferde ~6 GB), paketleri kurar ve tarayıcıda http://localhost:8000 adresini açar.
+
+## Kurulum (elle)
 
 ### 1. Ollama ve model
 
