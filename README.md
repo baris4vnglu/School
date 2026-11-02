@@ -71,4 +71,4 @@ OLLAMA_MODEL=qwen2.5vl:3b uvicorn backend.app:app --port 8000
 
 ---
 
-> 🚗 Bu repoda ayrıca araba galerisi için müşteri takip uygulaması var: [`oto-crm/`](oto-crm/README.md)
+> 🚗 This repo also contains a customer tracking app for car dealerships: [`auto-crm/`](auto-crm/README.md)

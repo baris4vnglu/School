@@ -1,16 +1,16 @@
-"""Oto CRM - Araba galerisi için müşteri geçmişi ve "kimi ne zaman arayalım" asistanı.
+"""Auto CRM - customer history and "who should we contact, and how" assistant for a car dealership.
 
-Tamamen lokal çalışır: veriler SQLite dosyasında (oto-crm/data/crm.db) tutulur.
+Runs fully locally: data is stored in a SQLite file (auto-crm/data/crm.db).
 
-Çalıştırma (oto-crm klasöründe):
+Run (inside the auto-crm folder):
     uvicorn backend.app:app --reload --port 8001
 
-Tahtadaki akış:
-    Product (satılan araç) ──► Customer (müşteri geçmişi)
-    Customer ──► Analysis (ne zaman yeniler?) ──► Lead (aranacaklar listesi)
-    Lead ──► Comm. (nasıl ulaşalım: ara / ziyaret / hediye)
-         ──► Content (ne söyleyelim) ──► Media (hangi kanaldan)
-    Görüşme sonucu tekrar Customer'a yazılır (geri bildirim okları).
+Flow from the whiteboard:
+    Product (car sold) ──► Customer (purchase history)
+    Customer ──► Analysis (when will they change cars?) ──► Lead (contact list)
+    Lead ──► Comm. (how to reach them: call / visit / gift)
+         ──► Content (what to say) ──► Media (which channel, 30-second ad video)
+    The outcome of each contact is written back to the Customer (feedback arrows).
 """
 
 from __future__ import annotations
@@ -30,33 +30,50 @@ from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "frontend"
-DB_PATH = Path(os.getenv("OTO_CRM_DB", ROOT / "data" / "crm.db"))
+DB_PATH = Path(os.getenv("AUTO_CRM_DB", ROOT / "data" / "crm.db"))
+SAMPLE_CSV = ROOT / "sample-data" / "customer-list.csv"
 
 DEFAULT_SETTINGS = {
-    "default_cycle_years": "5",   # tek araç almış müşteri için varsayılan yenileme süresi
-    "due_window_days": "180",     # beklenen tarihe bu kadar gün kala listeye girer
-    "cooldown_days": "30",        # görüşülen müşteri bu süre listede aşağı düşer
-    "vip_purchase_count": "3",    # bu kadar ve üstü alım = VIP
-    "vip_total_spend": "3000000", # veya bu kadar toplam harcama = VIP
+    "default_cycle_years": "5",   # assumed replacement cycle for one-time buyers
+    "due_window_days": "180",     # customers enter the list this many days before the expected date
+    "cooldown_days": "30",        # a contacted customer drops down the list for this many days
+    "vip_purchase_count": "3",    # this many purchases or more = VIP
+    "vip_total_spend": "3000000", # or this much total spend = VIP
+}
+TEXT_SETTINGS = {                 # used in the call script and the ad video
+    "dealer_name": "Your Dealership",
+    "dealer_phone": "+90 392 000 00 00",
+    "dealer_address": "Main Street 1, Nicosia",
 }
 
 CHANNELS = {
-    "telefon": "📞 Telefonla ara",
-    "ziyaret": "🏠 Ev/iş yeri ziyareti",
-    "hediye": "🎁 Hediye gönder",
-    "whatsapp": "💬 WhatsApp / SMS",
-    "eposta": "✉️ E-posta",
-    "davet": "🚗 Galeriye davet / test sürüşü",
+    "phone": "📞 Call",
+    "visit": "🏠 Home / office visit",
+    "gift": "🎁 Send a gift",
+    "message": "💬 WhatsApp / SMS",
+    "video": "🎬 Send 30s ad video",
+    "email": "✉️ Email",
+    "invite": "🚗 Invite to showroom / test drive",
 }
 
 OUTCOMES = {
-    "ulasilamadi": "Ulaşılamadı",
-    "ilgileniyor": "İlgileniyor",
-    "randevu": "Randevu alındı",
-    "dusunecek": "Düşünecek",
-    "ilgilenmiyor": "Şu an ilgilenmiyor",
-    "satis": "Satış yapıldı",
+    "no_answer": "No answer",
+    "interested": "Interested",
+    "appointment": "Appointment booked",
+    "thinking": "Will think about it",
+    "not_interested": "Not interested right now",
+    "sold": "Sale made",
 }
+
+# Keys used by the earlier Turkish version, migrated on start-up.
+LEGACY_KEYS = {
+    "telefon": "phone", "ziyaret": "visit", "hediye": "gift", "whatsapp": "message",
+    "eposta": "email", "davet": "invite",
+    "ulasilamadi": "no_answer", "ilgileniyor": "interested", "randevu": "appointment",
+    "dusunecek": "thinking", "ilgilenmiyor": "not_interested", "satis": "sold",
+}
+
+HOT = ("overdue", "due_soon")
 
 
 # --------------------------------------------------------------------------- DB
@@ -99,14 +116,18 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             """
         )
-        for k, v in DEFAULT_SETTINGS.items():
+        for k, v in (DEFAULT_SETTINGS | TEXT_SETTINGS).items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
+        for old, new in LEGACY_KEYS.items():
+            conn.execute("UPDATE customers SET preferred_channel=? WHERE preferred_channel=?", (new, old))
+            conn.execute("UPDATE contacts SET channel=? WHERE channel=?", (new, old))
+            conn.execute("UPDATE contacts SET outcome=? WHERE outcome=?", (new, old))
 
 
-def get_settings(conn: sqlite3.Connection) -> dict[str, float]:
-    rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    out = {k: float(v) for k, v in DEFAULT_SETTINGS.items()}
-    out.update({r["key"]: float(r["value"]) for r in rows})
+def get_settings(conn: sqlite3.Connection) -> dict:
+    rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+    out: dict = {k: float(rows.get(k, v)) for k, v in DEFAULT_SETTINGS.items()}
+    out.update({k: rows.get(k, v) for k, v in TEXT_SETTINGS.items()})
     return out
 
 
@@ -118,7 +139,12 @@ def parse_date(s: str | None) -> date | None:
             return datetime.strptime(s.strip(), fmt).date()
         except ValueError:
             pass
-    raise HTTPException(400, f"Tarih anlaşılamadı: {s!r} (YYYY-AA-GG veya GG.AA.YYYY)")
+    raise HTTPException(400, f"Could not read date: {s!r} (use YYYY-MM-DD or DD.MM.YYYY)")
+
+
+def clean_date(s: str | None) -> str | None:
+    d = parse_date(s) if s else None
+    return d.isoformat() if d else None
 
 
 # --------------------------------------------------------------------- Analysis
@@ -128,12 +154,20 @@ def years(days: float) -> float:
 
 
 def fmt_money(x: float) -> str:
-    return f"{x:,.0f} TL".replace(",", ".")
+    return f"{x:,.0f} TL"
+
+
+def fmt_date(d: date) -> str:
+    return d.strftime("%d %b %Y")
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
 
 
 def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
-            settings: dict[str, float], today: date | None = None) -> dict:
-    """Müşterinin alım alışkanlığını çıkarır ve ne yapılması gerektiğini önerir."""
+            settings: dict, today: date | None = None) -> dict:
+    """Works out the customer's buying habit and recommends what to do next."""
     today = today or date.today()
     ps = sorted(purchases, key=lambda p: p["date"])
     cs = sorted(contacts, key=lambda c: c["date"])
@@ -143,9 +177,9 @@ def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
     result: dict = {
         "purchase_count": n,
         "total_spend": total,
-        "segment": "Aday",
-        "status": "veri_yok",
-        "status_label": "Alım kaydı yok",
+        "segment": "Prospect",
+        "status": "no_data",
+        "status_label": "No purchases yet",
         "score": 0,
         "reasons": [],
         "actions": [],
@@ -154,17 +188,16 @@ def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
     if n == 0:
         return result
 
-    # --- Alım döngüsü
+    # --- Purchase cycle
     dates = [date.fromisoformat(p["date"]) for p in ps]
     last_p = ps[-1]
     last_d = dates[-1]
     if n >= 2:
-        intervals = [(b - a).days for a, b in zip(dates, dates[1:])]
-        cycle_days = mean(intervals)
-        cycle_src = f"{n} alımın ortalaması"
+        cycle_days = mean((b - a).days for a, b in zip(dates, dates[1:]))
+        cycle_src = f"average of {n} purchases"
     else:
         cycle_days = settings["default_cycle_years"] * 365.25
-        cycle_src = "varsayılan (tek alım)"
+        cycle_src = "default for one-time buyers"
     expected = last_d + timedelta(days=round(cycle_days))
     days_left = (expected - today).days
     owned_days = (today - last_d).days
@@ -173,62 +206,64 @@ def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
     if n >= settings["vip_purchase_count"] or total >= settings["vip_total_spend"]:
         segment = "VIP"
     elif n >= 2:
-        segment = "Sadık"
+        segment = "Loyal"
     else:
-        segment = "Tek alım"
+        segment = "One-time"
 
-    # --- Son görüşme / erteleme
+    # --- Last contact / snooze
     last_c = cs[-1] if cs else None
     snooze_until = parse_date(last_c["next_contact_date"]) if last_c and last_c["next_contact_date"] else None
     recently_contacted = bool(
         last_c and (today - date.fromisoformat(last_c["date"])).days < settings["cooldown_days"]
     )
 
-    # --- Durum
+    # --- Status
     if snooze_until and snooze_until > today:
-        status, label = "ertelendi", f"{snooze_until.strftime('%d.%m.%Y')} tarihine ertelendi"
+        status, label = "snoozed", f"Snoozed until {fmt_date(snooze_until)}"
     elif days_left < 0:
-        status, label = "gecikmis", f"Yenileme zamanı {abs(days_left)} gün geçti"
+        status, label = "overdue", f"Replacement {plural(abs(days_left), 'day')} overdue"
     elif days_left <= settings["due_window_days"]:
-        status, label = "yaklasiyor", f"Yenileme zamanına {days_left} gün var"
+        status, label = "due_soon", f"Replacement due in {plural(days_left, 'day')}"
     else:
-        status, label = "takipte", f"Yenileme zamanına {days_left} gün var"
+        status, label = "on_track", f"Replacement due in {plural(days_left, 'day')}"
 
-    # --- Öncelik puanı (0-100)
-    if status == "gecikmis":
+    # --- Priority score (0-100)
+    if status == "overdue":
         timing = 60
-    elif status == "yaklasiyor":
+    elif status == "due_soon":
         timing = 35 + 25 * (1 - days_left / max(settings["due_window_days"], 1))
-    elif status == "takipte":
+    elif status == "on_track":
         timing = max(0, 20 - days_left / 60)
     else:
         timing = 0
-    loyalty = min(25, (n - 1) * 10 + (5 if n else 0))
+    loyalty = min(25, (n - 1) * 10 + 5)
     value = min(15, total / max(settings["vip_total_spend"], 1) * 15)
     score = timing + loyalty + value
-    if recently_contacted and status != "ertelendi":
+    if recently_contacted and status != "snoozed":
         score *= 0.4
-    if status == "ertelendi":
+    if status == "snoozed":
         score = min(score, 10)
 
-    # --- Gerekçeler (Analysis)
+    # --- Reasons (Analysis)
+    car = f"{last_p['brand'] or ''} {last_p['model'] or ''}".strip() or "their car"
     reasons = [
-        f"Son aracı: {last_p['brand'] or ''} {last_p['model'] or ''} — {last_d.strftime('%d.%m.%Y')} ({years(owned_days)} yıldır kullanıyor)".replace("  ", " "),
-        f"Ortalama değiştirme süresi: {years(cycle_days)} yıl ({cycle_src})",
-        f"Beklenen yeni alım tarihi: {expected.strftime('%d.%m.%Y')}",
-        f"Toplam {n} alım, {fmt_money(total)}",
+        f"Current car: {car}, bought {fmt_date(last_d)} (driving it for {years(owned_days)} years)",
+        f"Average replacement cycle: {years(cycle_days)} years ({cycle_src})",
+        f"Expected next purchase: {fmt_date(expected)}",
+        f"{plural(n, 'purchase')} in total, {fmt_money(total)}",
     ]
     if owned_days > 8 * 365:
-        reasons.append("Aracı 8 yaşını geçti: bakım masrafları artıyor, takas için güçlü fırsat")
+        reasons.append("The car is over 8 years old: maintenance costs are rising, a strong trade-in opportunity")
     if last_c:
         reasons.append(
-            f"Son görüşme: {date.fromisoformat(last_c['date']).strftime('%d.%m.%Y')} — "
-            f"{CHANNELS.get(last_c['channel'], last_c['channel'] or '')} / {OUTCOMES.get(last_c['outcome'], last_c['outcome'] or '')}"
+            f"Last contact: {fmt_date(date.fromisoformat(last_c['date']))} — "
+            f"{CHANNELS.get(last_c['channel'], last_c['channel'] or '')} / "
+            f"{OUTCOMES.get(last_c['outcome'], last_c['outcome'] or '')}"
         )
-    if recently_contacted and status != "ertelendi":
-        reasons.append(f"Son {int(settings['cooldown_days'])} gün içinde görüşüldü, önceliği düşürüldü")
+    if recently_contacted and status != "snoozed":
+        reasons.append(f"Contacted within the last {int(settings['cooldown_days'])} days, priority lowered")
 
-    # --- İletişim önerisi (Comm. + Media)
+    # --- Contact recommendation (Comm. + Media)
     actions: list[dict] = []
 
     def add(ch: str, why: str) -> None:
@@ -238,64 +273,64 @@ def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
                 return
         actions.append({"channel": ch, "label": CHANNELS[ch], "why": why})
 
-    hot = status in ("gecikmis", "yaklasiyor")
+    hot = status in HOT
     pref = customer.get("preferred_channel")
     if pref in CHANNELS and hot:
-        add(pref, "Müşterinin tercih ettiği iletişim kanalı")
+        add(pref, "The customer's preferred channel")
     if hot:
         if segment == "VIP":
-            add("ziyaret", "VIP müşteri: birebir ziyaret ve yeni model kataloğu götürün")
-            add("hediye", "VIP müşteri: ziyaret öncesi/sonrası özel hediye (ör. çiçek, premium bakım paketi)")
-            add("telefon", "Ziyaret için önce telefonla randevu alın")
-        elif segment == "Sadık":
-            add("telefon", "Sadık müşteri: kişisel telefonla yenileme teklifi")
-            add("davet", "Yeni modelde test sürüşüne davet edin")
-            add("hediye", "Küçük bir jest: ücretsiz bakım / yıkama kuponu")
+            add("visit", "VIP customer: visit in person and bring the new model catalogue")
+            add("gift", "VIP customer: a special gift before or after the visit (e.g. flowers, premium service package)")
+            add("phone", "Call first to book the visit")
+        elif segment == "Loyal":
+            add("phone", "Loyal customer: a personal call with an upgrade offer")
+            add("video", "Send their personalised 30-second ad video on WhatsApp")
+            add("invite", "Invite them to test drive the new model")
+            add("gift", "A small gesture: free service or car wash voucher")
         else:
-            add("telefon", "Takas teklifiyle telefonla arayın")
-            add("whatsapp", "Ulaşılamazsa kampanya bilgisini WhatsApp/SMS ile gönderin")
-            add("davet", "Galeriye kahveye / test sürüşüne davet edin")
-    elif status == "takipte":
-        add("whatsapp", "Henüz erken: ilişkiyi sıcak tutun (bayram/kampanya mesajı)")
-        add("eposta", "Yeni model tanıtımları ve servis hatırlatmaları")
+            add("phone", "Call with a trade-in offer")
+            add("video", "If you can't reach them, send the 30-second ad video on WhatsApp")
+            add("invite", "Invite them to the showroom for a coffee and a test drive")
+    elif status == "on_track":
+        add("message", "Still early: keep the relationship warm (holiday / campaign message)")
+        add("email", "New model launches and service reminders")
         if segment == "VIP":
-            add("hediye", "VIP müşteriye yılda bir hediye ilişkiyi korur")
+            add("gift", "A yearly gift keeps VIP customers close")
 
     bd = parse_date(customer.get("birth_date")) if customer.get("birth_date") else None
     if bd:
-        try:
-            nxt = bd.replace(year=today.year)
-        except ValueError:  # 29 Şubat
-            nxt = date(today.year, 3, 1)
-        if nxt < today:
+        def bday(y: int) -> date:
             try:
-                nxt = bd.replace(year=today.year + 1)
-            except ValueError:
-                nxt = date(today.year + 1, 3, 1)
+                return bd.replace(year=y)
+            except ValueError:  # 29 February
+                return date(y, 3, 1)
+        nxt = bday(today.year)
+        if nxt < today:
+            nxt = bday(today.year + 1)
         if (nxt - today).days <= 30:
-            add("hediye", f"Doğum günü {nxt.strftime('%d.%m')} — tebrik + hediye gönderin")
-            reasons.append(f"Doğum günü yaklaşıyor ({nxt.strftime('%d.%m')})")
+            add("gift", f"Birthday on {nxt.strftime('%d %b')}: send wishes and a gift")
+            reasons.append(f"Birthday coming up ({nxt.strftime('%d %b')})")
             score = min(100, score + 10)
 
-    # --- Konuşma metni (Content)
-    car = f"{last_p['brand'] or ''} {last_p['model'] or ''}".strip() or "aracınız"
+    # --- Call script (Content)
     first = (customer.get("name") or "").split(" ")[0]
+    dealer = settings.get("dealer_name") or "[dealership]"
     if hot:
         if n >= 2:
-            habit = f"Kayıtlarımıza göre araçlarınızı ortalama {years(cycle_days)} yılda bir yeniliyorsunuz"
+            habit = f"Our records show you usually change your car every {years(cycle_days)} years"
         else:
-            habit = f"{car} ile {years(owned_days)} yılı geride bıraktınız"
+            habit = f"You've been driving the {car} for {years(owned_days)} years now"
         script = (
-            f"Merhaba {first}, ben [galeri adı]'ndan [adınız]. {last_d.year} yılında bizden aldığınız "
-            f"{car} için sizi aramak istedik. {habit}; "
-            f"tam da yenileme zamanı. Şu an aracınızı iyi bir fiyatla takasa alıp "
-            f"{last_p['brand'] or 'tercih ettiğiniz markanın'} yeni modellerini size özel koşullarla sunabiliyoruz. "
-            f"Bu hafta bir kahve içmeye ve test sürüşüne gelmek ister misiniz?"
+            f"Hi {first}, this is [your name] from {dealer}. We're calling about the {car} "
+            f"you bought from us in {last_d.year}. {habit}, so it's the perfect time for an upgrade. "
+            f"Right now we can take your car as a trade-in at a great price and offer you the new "
+            f"{last_p['brand'] or 'models'} range on special terms. "
+            f"Would you like to drop by this week for a coffee and a test drive?"
         )
     else:
         script = (
-            f"Merhaba {first}, [galeri adı]'ndan [adınız]. {car} nasıl gidiyor, memnun musunuz? "
-            f"Bakım veya herhangi bir konuda yardımcı olabileceğimiz bir şey olursa bizi arayabilirsiniz."
+            f"Hi {first}, this is [your name] from {dealer}. How is the {car} treating you? "
+            f"If you ever need anything — service or anything else — just give us a call."
         )
 
     result.update(
@@ -306,6 +341,7 @@ def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
         cycle_years=years(cycle_days),
         expected_date=expected.isoformat(),
         days_left=days_left,
+        owned_years=years(owned_days),
         last_purchase=last_p,
         last_contact=last_c,
         reasons=reasons,
@@ -318,7 +354,7 @@ def analyze(customer: dict, purchases: list[dict], contacts: list[dict],
 def load_customer(conn: sqlite3.Connection, cid: int) -> tuple[dict, list[dict], list[dict]]:
     row = conn.execute("SELECT * FROM customers WHERE id = ?", (cid,)).fetchone()
     if not row:
-        raise HTTPException(404, "Müşteri bulunamadı")
+        raise HTTPException(404, "Customer not found")
     ps = [dict(r) for r in conn.execute("SELECT * FROM purchases WHERE customer_id = ? ORDER BY date", (cid,))]
     cs = [dict(r) for r in conn.execute("SELECT * FROM contacts WHERE customer_id = ? ORDER BY date", (cid,))]
     return dict(row), ps, cs
@@ -333,17 +369,17 @@ def all_analyzed(conn: sqlite3.Connection) -> list[dict]:
         ps_by.setdefault(r["customer_id"], []).append(dict(r))
     for r in conn.execute("SELECT * FROM contacts"):
         cs_by.setdefault(r["customer_id"], []).append(dict(r))
-    out = []
-    for c in customers:
-        a = analyze(c, ps_by.get(c["id"], []), cs_by.get(c["id"], []), settings)
-        out.append({"customer": c, "analysis": a})
+    out = [
+        {"customer": c, "analysis": analyze(c, ps_by.get(c["id"], []), cs_by.get(c["id"], []), settings)}
+        for c in customers
+    ]
     out.sort(key=lambda x: -x["analysis"]["score"])
     return out
 
 
 # -------------------------------------------------------------------------- API
 
-app = FastAPI(title="Oto CRM")
+app = FastAPI(title="Auto CRM")
 init_db()
 
 
@@ -375,11 +411,6 @@ class ContactIn(BaseModel):
     next_contact_date: str | None = None
 
 
-def clean_date(s: str | None) -> str | None:
-    d = parse_date(s) if s else None
-    return d.isoformat() if d else None
-
-
 @app.get("/api/meta")
 def meta():
     return {"channels": CHANNELS, "outcomes": OUTCOMES}
@@ -387,14 +418,14 @@ def meta():
 
 @app.get("/api/leads")
 def leads():
-    """Aranacaklar listesi: öncelik puanına göre sıralı."""
+    """Contact list, sorted by priority score."""
     with db() as conn:
         items = all_analyzed(conn)
-    hot = [i for i in items if i["analysis"]["status"] in ("gecikmis", "yaklasiyor")]
+    hot = [i for i in items if i["analysis"]["status"] in HOT]
     stats = {
         "customers": len(items),
-        "gecikmis": sum(i["analysis"]["status"] == "gecikmis" for i in items),
-        "yaklasiyor": sum(i["analysis"]["status"] == "yaklasiyor" for i in items),
+        "overdue": sum(i["analysis"]["status"] == "overdue" for i in items),
+        "due_soon": sum(i["analysis"]["status"] == "due_soon" for i in items),
         "vip": sum(i["analysis"]["segment"] == "VIP" for i in items),
     }
     return {"stats": stats, "leads": hot}
@@ -508,16 +539,24 @@ def read_settings():
 
 
 @app.put("/api/settings")
-def write_settings(values: dict[str, float]):
+def write_settings(values: dict[str, float | str]):
     with db() as conn:
         for k, v in values.items():
             if k in DEFAULT_SETTINGS:
-                conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", (k, str(v)))
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"{k} must be a number")
+            elif k not in TEXT_SETTINGS:
+                continue
+            conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", (k, str(v)))
         return get_settings(conn)
 
 
+# ----------------------------------------------------------------- CSV import / export
+
 def parse_price(s: str | None) -> float | None:
-    """'1.250.000', '1.250.000,50', '1250000', '1,250,000 TL' gibi yazımları sayıya çevirir."""
+    """Turns '1.250.000', '1.250.000,50', '1250000', '1,250,000 TL' etc. into a number."""
     s = (s or "").upper().replace("TL", "").replace("₺", "").replace(" ", "")
     if not s:
         return None
@@ -533,24 +572,24 @@ def parse_price(s: str | None) -> float | None:
         return None
 
 
-CSV_COLUMNS = ["ad", "telefon", "eposta", "sehir", "adres", "dogum_tarihi", "tercih",
-               "tarih", "marka", "model", "model_yili", "fiyat", "not"]
+CSV_COLUMNS = ["name", "phone", "email", "city", "address", "birth_date", "preferred_channel",
+               "purchase_date", "brand", "model", "model_year", "price", "notes"]
+# Accepted header names for each column (English first, plus the Turkish headers of the earlier version).
 ALIASES = {
-    "ad": ["ad", "ad soyad", "adsoyad", "isim", "musteri", "müşteri", "name"],
-    "telefon": ["telefon", "tel", "gsm", "phone"],
-    "eposta": ["eposta", "e-posta", "email", "mail"],
-    "sehir": ["sehir", "şehir", "il", "city"],
-    "adres": ["adres", "address"],
-    "dogum_tarihi": ["dogum_tarihi", "doğum tarihi", "dogum tarihi", "doğum_tarihi"],
-    "tercih": ["tercih", "iletisim", "iletişim", "kanal"],
-    "tarih": ["tarih", "alis_tarihi", "alış tarihi", "satis_tarihi", "satış tarihi", "date"],
-    "marka": ["marka", "brand"],
+    "name": ["name", "full name", "customer", "ad", "ad soyad", "isim", "müşteri", "musteri"],
+    "phone": ["phone", "telephone", "mobile", "tel", "telefon", "gsm"],
+    "email": ["email", "e-mail", "mail", "eposta", "e-posta"],
+    "city": ["city", "town", "sehir", "şehir", "il"],
+    "address": ["address", "adres"],
+    "birth_date": ["birth_date", "birthday", "date of birth", "dob", "dogum_tarihi", "doğum tarihi"],
+    "preferred_channel": ["preferred_channel", "channel", "preference", "tercih", "kanal"],
+    "purchase_date": ["purchase_date", "date", "purchase date", "sale date", "tarih", "alış tarihi"],
+    "brand": ["brand", "make", "marka"],
     "model": ["model"],
-    "model_yili": ["model_yili", "model yılı", "model yili", "yil", "yıl"],
-    "fiyat": ["fiyat", "tutar", "price"],
-    "not": ["not", "notlar", "aciklama", "açıklama", "notes"],
+    "model_year": ["model_year", "model year", "year", "model_yili", "model yılı"],
+    "price": ["price", "amount", "fiyat", "tutar"],
+    "notes": ["notes", "note", "comment", "not", "notlar", "açıklama"],
 }
-SAMPLE_CSV = ROOT / "ornek-veri" / "musteri-listesi.csv"
 
 
 def _pick(r: dict, key: str) -> str | None:
@@ -561,8 +600,8 @@ def _pick(r: dict, key: str) -> str | None:
 
 
 def import_text(raw: str) -> dict:
-    """CSV metnini içe aktarır. Her satır bir alımdır; tarih boşsa sadece müşteri eklenir.
-    Aynı ad+telefon tek müşteri sayılır, aynı alım (müşteri+tarih+marka+model) iki kez eklenmez."""
+    """Imports CSV text. Each row is one purchase; if the date is empty only the customer is added.
+    The same name+phone is one customer, and the same purchase (customer+date+brand+model) is never added twice."""
     sample = raw[:2000]
     delim = ";" if sample.count(";") > sample.count(",") else ","
     reader = csv.DictReader(io.StringIO(raw), delimiter=delim)
@@ -570,37 +609,39 @@ def import_text(raw: str) -> dict:
     with db() as conn:
         for row in reader:
             r = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
-            name = _pick(r, "ad")
+            name = _pick(r, "name")
             if not name:
                 skipped += 1
                 continue
-            phone = _pick(r, "telefon")
-            pref = (_pick(r, "tercih") or "").lower()
+            phone = _pick(r, "phone")
+            pref = (_pick(r, "preferred_channel") or "").lower()
+            pref = LEGACY_KEYS.get(pref, pref)
             pref = pref if pref in CHANNELS else None
+            fields = (_pick(r, "email"), _pick(r, "city"), _pick(r, "address"),
+                      clean_date(_pick(r, "birth_date")), pref)
             found = conn.execute(
                 "SELECT id FROM customers WHERE name = ? AND IFNULL(phone,'') = IFNULL(?,'')", (name, phone)
             ).fetchone()
             if found:
                 cid = found["id"]
-                # eksik bilgileri tamamla
-                conn.execute(
+                conn.execute(  # fill in missing details
                     "UPDATE customers SET email=IFNULL(email,?), city=IFNULL(city,?), address=IFNULL(address,?), "
                     "birth_date=IFNULL(birth_date,?), preferred_channel=IFNULL(preferred_channel,?) WHERE id=?",
-                    (_pick(r, "eposta"), _pick(r, "sehir"), _pick(r, "adres"),
-                     clean_date(_pick(r, "dogum_tarihi")), pref, cid),
+                    (*fields, cid),
                 )
             else:
                 cid = conn.execute(
                     "INSERT INTO customers(name, phone, email, city, address, birth_date, preferred_channel) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (name, phone, _pick(r, "eposta"), _pick(r, "sehir"), _pick(r, "adres"),
-                     clean_date(_pick(r, "dogum_tarihi")), pref),
+                    (name, phone, *fields),
                 ).lastrowid
                 added_c += 1
-            d = clean_date(_pick(r, "tarih"))
-            if not d:
+            d = clean_date(_pick(r, "purchase_date"))
+            if not d:  # prospect without a purchase: keep the note on the customer
+                if _pick(r, "notes"):
+                    conn.execute("UPDATE customers SET notes=IFNULL(notes,?) WHERE id=?", (_pick(r, "notes"), cid))
                 continue
-            brand, model = _pick(r, "marka"), _pick(r, "model")
+            brand, model = _pick(r, "brand"), _pick(r, "model")
             dup = conn.execute(
                 "SELECT 1 FROM purchases WHERE customer_id=? AND date=? AND IFNULL(brand,'')=IFNULL(?,'') "
                 "AND IFNULL(model,'')=IFNULL(?,'')", (cid, d, brand, model),
@@ -608,12 +649,12 @@ def import_text(raw: str) -> dict:
             if dup:
                 skipped += 1
                 continue
-            my = _pick(r, "model_yili")
+            my = _pick(r, "model_year")
             conn.execute(
                 "INSERT INTO purchases(customer_id, date, brand, model, model_year, price, notes) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (cid, d, brand, model, int(my) if my and my.isdigit() else None,
-                 parse_price(_pick(r, "fiyat")), _pick(r, "not")),
+                 parse_price(_pick(r, "price")), _pick(r, "notes")),
             )
             added_p += 1
     return {"customers": added_c, "purchases": added_p, "skipped": skipped}
@@ -621,24 +662,24 @@ def import_text(raw: str) -> dict:
 
 @app.post("/api/import")
 async def import_csv(file: UploadFile):
-    """CSV içe aktarma (Excel'den 'CSV UTF-8' olarak kaydedilmiş dosya)."""
+    """CSV import (e.g. a file saved from Excel as 'CSV UTF-8')."""
     data = await file.read()
     try:
         raw = data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raw = data.decode("cp1254")  # Excel'in Türkçe Windows kodlaması
+        raw = data.decode("cp1254")  # Excel's Turkish Windows encoding
     return import_text(raw)
 
 
 @app.post("/api/import-sample")
 def import_sample():
-    """oto-crm/ornek-veri/musteri-listesi.csv dosyasındaki hazır listeyi yükler."""
+    """Loads the ready-made list in auto-crm/sample-data/customer-list.csv."""
     return import_text(SAMPLE_CSV.read_text(encoding="utf-8-sig"))
 
 
 @app.get("/api/export")
 def export_csv():
-    """Tüm müşteri listesini (alımlarıyla birlikte) Excel'de açılabilen CSV olarak indirir."""
+    """Downloads the whole customer list (with purchases) as a CSV that opens in Excel."""
     out = io.StringIO()
     w = csv.writer(out, delimiter=";")
     w.writerow(CSV_COLUMNS)
@@ -652,37 +693,37 @@ def export_csv():
                     r["birth_date"] or "", r["preferred_channel"] or "", r["p_date"] or "", r["brand"] or "",
                     r["model"] or "", r["model_year"] or "", f"{r['price']:.0f}" if r["price"] else "",
                     r["p_notes"] or ""])
-    name = f"musteri-listesi-{date.today().isoformat()}.csv"
-    return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+    name = f"customer-list-{date.today().isoformat()}.csv"
+    return Response("﻿" + out.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.post("/api/demo")
 def load_demo():
-    """Örnek veriler: denemek için."""
+    """Five sample customers to try the app with."""
     t = date.today()
 
     def ago(y: float, extra_days: int = 0) -> str:
         return (t - timedelta(days=round(y * 365.25) + extra_days)).isoformat()
 
     demo = [
-        # 3 senede bir araba alan, son arabasını ~3 yıl önce almış -> şimdi aranmalı
-        ({"name": "Ahmet Yılmaz", "phone": "0532 111 22 33", "city": "Lefkoşa", "address": "Göçmenköy",
+        # buys a car every 3 years, last one ~3 years ago -> call now
+        ({"name": "Ahmet Yılmaz", "phone": "0532 111 22 33", "city": "Nicosia", "address": "Göçmenköy",
           "birth_date": (t + timedelta(days=12)).replace(year=1978).isoformat()},
          [(ago(9), "Toyota", "Corolla", 950000), (ago(6), "Toyota", "C-HR", 1300000), (ago(3, 15), "Toyota", "RAV4", 1900000)]),
-        # 10 yıl önce tek araç almış -> varsayılan süreyi çoktan geçti
-        ({"name": "Ayşe Demir", "phone": "0533 444 55 66", "city": "Girne"},
+        # one car 10 years ago -> long past the default cycle
+        ({"name": "Ayşe Demir", "phone": "0533 444 55 66", "city": "Kyrenia"},
          [(ago(10), "Renault", "Clio", 450000)]),
-        # VIP: çok alım, yüksek harcama -> ev ziyareti + hediye
-        ({"name": "Mehmet Kaya", "phone": "0542 777 88 99", "city": "Gazimağusa", "address": "Sakarya Mah.",
-          "preferred_channel": "ziyaret"},
+        # VIP: many purchases, high spend -> home visit + gift
+        ({"name": "Mehmet Kaya", "phone": "0542 777 88 99", "city": "Famagusta", "address": "Sakarya District",
+          "preferred_channel": "visit"},
          [(ago(8), "BMW", "320i", 1800000), (ago(6), "BMW", "520d", 2600000),
           (ago(4), "Mercedes", "E200", 3100000), (ago(2, -30), "BMW", "X5", 4800000)]),
-        # Yakın zamanda almış -> takipte
-        ({"name": "Elif Şahin", "phone": "0548 222 33 44", "city": "Lefkoşa"},
+        # bought recently -> on track
+        ({"name": "Elif Şahin", "phone": "0548 222 33 44", "city": "Nicosia"},
          [(ago(0.5), "Hyundai", "i20", 900000)]),
-        # 2 alım, 4 yıl arayla, son alım 3.7 yıl önce -> yaklaşıyor
-        ({"name": "Can Öztürk", "phone": "0533 999 00 11", "city": "Güzelyurt", "preferred_channel": "whatsapp"},
+        # 2 purchases 4 years apart, last 3.7 years ago -> due soon
+        ({"name": "Can Öztürk", "phone": "0533 999 00 11", "city": "Morphou", "preferred_channel": "message"},
          [(ago(7.7), "Volkswagen", "Polo", 600000), (ago(3.7), "Volkswagen", "Golf", 1100000)]),
     ]
     with db() as conn:
