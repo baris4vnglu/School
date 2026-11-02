@@ -68,3 +68,7 @@ Tarayıcıda **http://localhost:8000** adresini açın.
 ```bash
 OLLAMA_MODEL=qwen2.5vl:3b uvicorn backend.app:app --port 8000
 ```
+
+---
+
+> 🚗 Bu repoda ayrıca araba galerisi için müşteri takip uygulaması var: [`oto-crm/`](oto-crm/README.md)
