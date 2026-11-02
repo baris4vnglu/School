@@ -24,7 +24,7 @@ from pathlib import Path
 from statistics import mean
 
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -533,40 +533,128 @@ def parse_price(s: str | None) -> float | None:
         return None
 
 
-@app.post("/api/import")
-async def import_csv(file: UploadFile):
-    """CSV içe aktarma. Sütunlar: ad, telefon, tarih, marka, model, fiyat (+ isteğe bağlı sehir, eposta).
-    Aynı ad+telefon tek müşteri sayılır; her satır bir alımdır."""
-    raw = (await file.read()).decode("utf-8-sig")
+CSV_COLUMNS = ["ad", "telefon", "eposta", "sehir", "adres", "dogum_tarihi", "tercih",
+               "tarih", "marka", "model", "model_yili", "fiyat", "not"]
+ALIASES = {
+    "ad": ["ad", "ad soyad", "adsoyad", "isim", "musteri", "müşteri", "name"],
+    "telefon": ["telefon", "tel", "gsm", "phone"],
+    "eposta": ["eposta", "e-posta", "email", "mail"],
+    "sehir": ["sehir", "şehir", "il", "city"],
+    "adres": ["adres", "address"],
+    "dogum_tarihi": ["dogum_tarihi", "doğum tarihi", "dogum tarihi", "doğum_tarihi"],
+    "tercih": ["tercih", "iletisim", "iletişim", "kanal"],
+    "tarih": ["tarih", "alis_tarihi", "alış tarihi", "satis_tarihi", "satış tarihi", "date"],
+    "marka": ["marka", "brand"],
+    "model": ["model"],
+    "model_yili": ["model_yili", "model yılı", "model yili", "yil", "yıl"],
+    "fiyat": ["fiyat", "tutar", "price"],
+    "not": ["not", "notlar", "aciklama", "açıklama", "notes"],
+}
+SAMPLE_CSV = ROOT / "ornek-veri" / "musteri-listesi.csv"
+
+
+def _pick(r: dict, key: str) -> str | None:
+    for a in ALIASES[key]:
+        if r.get(a):
+            return r[a]
+    return None
+
+
+def import_text(raw: str) -> dict:
+    """CSV metnini içe aktarır. Her satır bir alımdır; tarih boşsa sadece müşteri eklenir.
+    Aynı ad+telefon tek müşteri sayılır, aynı alım (müşteri+tarih+marka+model) iki kez eklenmez."""
     sample = raw[:2000]
     delim = ";" if sample.count(";") > sample.count(",") else ","
     reader = csv.DictReader(io.StringIO(raw), delimiter=delim)
-    added_c = added_p = 0
+    added_c = added_p = skipped = 0
     with db() as conn:
         for row in reader:
             r = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
-            name = r.get("ad") or r.get("isim") or r.get("name")
-            if not name or not r.get("tarih"):
+            name = _pick(r, "ad")
+            if not name:
+                skipped += 1
                 continue
-            phone = r.get("telefon") or r.get("phone") or None
+            phone = _pick(r, "telefon")
+            pref = (_pick(r, "tercih") or "").lower()
+            pref = pref if pref in CHANNELS else None
             found = conn.execute(
                 "SELECT id FROM customers WHERE name = ? AND IFNULL(phone,'') = IFNULL(?,'')", (name, phone)
             ).fetchone()
             if found:
                 cid = found["id"]
+                # eksik bilgileri tamamla
+                conn.execute(
+                    "UPDATE customers SET email=IFNULL(email,?), city=IFNULL(city,?), address=IFNULL(address,?), "
+                    "birth_date=IFNULL(birth_date,?), preferred_channel=IFNULL(preferred_channel,?) WHERE id=?",
+                    (_pick(r, "eposta"), _pick(r, "sehir"), _pick(r, "adres"),
+                     clean_date(_pick(r, "dogum_tarihi")), pref, cid),
+                )
             else:
                 cid = conn.execute(
-                    "INSERT INTO customers(name, phone, email, city) VALUES (?, ?, ?, ?)",
-                    (name, phone, r.get("eposta") or None, r.get("sehir") or None),
+                    "INSERT INTO customers(name, phone, email, city, address, birth_date, preferred_channel) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (name, phone, _pick(r, "eposta"), _pick(r, "sehir"), _pick(r, "adres"),
+                     clean_date(_pick(r, "dogum_tarihi")), pref),
                 ).lastrowid
                 added_c += 1
-            price = parse_price(r.get("fiyat"))
+            d = clean_date(_pick(r, "tarih"))
+            if not d:
+                continue
+            brand, model = _pick(r, "marka"), _pick(r, "model")
+            dup = conn.execute(
+                "SELECT 1 FROM purchases WHERE customer_id=? AND date=? AND IFNULL(brand,'')=IFNULL(?,'') "
+                "AND IFNULL(model,'')=IFNULL(?,'')", (cid, d, brand, model),
+            ).fetchone()
+            if dup:
+                skipped += 1
+                continue
+            my = _pick(r, "model_yili")
             conn.execute(
-                "INSERT INTO purchases(customer_id, date, brand, model, price) VALUES (?, ?, ?, ?, ?)",
-                (cid, clean_date(r["tarih"]), r.get("marka"), r.get("model"), price),
+                "INSERT INTO purchases(customer_id, date, brand, model, model_year, price, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (cid, d, brand, model, int(my) if my and my.isdigit() else None,
+                 parse_price(_pick(r, "fiyat")), _pick(r, "not")),
             )
             added_p += 1
-    return {"customers": added_c, "purchases": added_p}
+    return {"customers": added_c, "purchases": added_p, "skipped": skipped}
+
+
+@app.post("/api/import")
+async def import_csv(file: UploadFile):
+    """CSV içe aktarma (Excel'den 'CSV UTF-8' olarak kaydedilmiş dosya)."""
+    data = await file.read()
+    try:
+        raw = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raw = data.decode("cp1254")  # Excel'in Türkçe Windows kodlaması
+    return import_text(raw)
+
+
+@app.post("/api/import-sample")
+def import_sample():
+    """oto-crm/ornek-veri/musteri-listesi.csv dosyasındaki hazır listeyi yükler."""
+    return import_text(SAMPLE_CSV.read_text(encoding="utf-8-sig"))
+
+
+@app.get("/api/export")
+def export_csv():
+    """Tüm müşteri listesini (alımlarıyla birlikte) Excel'de açılabilen CSV olarak indirir."""
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=";")
+    w.writerow(CSV_COLUMNS)
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT c.*, p.date AS p_date, p.brand, p.model, p.model_year, p.price, p.notes AS p_notes "
+            "FROM customers c LEFT JOIN purchases p ON p.customer_id = c.id ORDER BY c.name, p.date"
+        ).fetchall()
+    for r in rows:
+        w.writerow([r["name"], r["phone"] or "", r["email"] or "", r["city"] or "", r["address"] or "",
+                    r["birth_date"] or "", r["preferred_channel"] or "", r["p_date"] or "", r["brand"] or "",
+                    r["model"] or "", r["model_year"] or "", f"{r['price']:.0f}" if r["price"] else "",
+                    r["p_notes"] or ""])
+    name = f"musteri-listesi-{date.today().isoformat()}.csv"
+    return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.post("/api/demo")

@@ -42,13 +42,31 @@ uvicorn backend.app:app --reload --port 8001
 
 ## Kullanım
 
-1. İlk deneme için **Ayarlar → Örnek veri yükle**.
-2. **Müşteriler → + Yeni Müşteri** ile müşteri ekleyin, açılan panelden aldığı araçları (tarih, marka, model, fiyat) girin.
-   Mevcut kayıtlarınız varsa **Ayarlar → CSV içe aktar** (`ad, telefon, tarih, marka, model, fiyat`).
+1. İlk deneme için **Ayarlar → Hazır listeyi yükle** (32 müşteri, 67 araç alımı: `ornek-veri/musteri-listesi.csv`).
+2. **Kendi müşteri listeniz:** Excel'de listeyi *CSV UTF-8* olarak kaydedip **Ayarlar → İçe aktar** ile yükleyin
+   (boş şablon aynı ekrandan indirilir). Tek tek eklemek için **Müşteriler → + Yeni Müşteri**.
 3. **Aranacaklar** sekmesi her gün kimi aramanız gerektiğini öncelik sırasıyla gösterir.
 4. Müşteriye tıklayın: analiz, önerilen iletişim şekli, hazır konuşma metni.
 5. Görüştükten sonra **Görüşmeyi kaydet** (kanal, sonuç, istenirse "tekrar ulaş" tarihi). Görüşülen müşteri
    bir süre listede geri plana düşer; "tekrar ulaş" tarihi verilirse o tarihe kadar ertelenir.
+
+## Müşteri listesi formatı (CSV)
+
+Her satır bir araç alımıdır; aynı **ad + telefon** tek müşteri sayılır. Ayırıcı `;` veya `,` olabilir,
+Excel'in Türkçe kodlaması (Windows-1254) da okunur. Aynı alım iki kez eklenmez, yani aynı dosyayı güncelleyip tekrar yükleyebilirsiniz.
+
+| Sütun | Zorunlu | Örnek |
+|---|---|---|
+| `ad` | ✔ | Ahmet Yılmaz |
+| `tarih` (alış tarihi) | alım için | `20.05.2019` veya `2019-05-20` — boşsa sadece müşteri (aday) eklenir |
+| `telefon`, `eposta`, `sehir`, `adres` | | 0533 111 22 33 |
+| `dogum_tarihi` | | 15.04.1980 |
+| `tercih` | | `telefon`, `ziyaret`, `hediye`, `whatsapp`, `eposta`, `davet` |
+| `marka`, `model`, `model_yili` | | Toyota, Corolla, 2019 |
+| `fiyat` | | `1.250.000` veya `1250000` |
+| `not` | | Takasla |
+
+**Ayarlar → Müşteri listesini indir** tüm veriyi aynı formatta dışa aktarır (yedek almak veya Excel'de açmak için).
 
 ## Nasıl karar veriyor?
 

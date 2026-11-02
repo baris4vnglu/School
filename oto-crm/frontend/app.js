@@ -286,7 +286,13 @@ $("#btn-import").addEventListener("click", async () => {
   const fd = new FormData();
   fd.append("file", file);
   const r = await api("/import", { method: "POST", body: fd });
-  toast(`${r.customers} yeni müşteri, ${r.purchases} alım eklendi`);
+  toast(`${r.customers} yeni müşteri, ${r.purchases} alım eklendi` + (r.skipped ? ` (${r.skipped} satır atlandı)` : ""));
+  $("#csv").value = "";
+});
+$("#btn-sample").addEventListener("click", async () => {
+  const r = await api("/import-sample", { method: "POST" });
+  toast(`${r.customers} müşteri, ${r.purchases} alım yüklendi` + (r.skipped ? ` (${r.skipped} zaten vardı)` : ""));
+  $('nav button[data-tab="leads"]').click();
 });
 
 // ---------------------------------------------------------------- Başlat

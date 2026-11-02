@@ -51,13 +51,28 @@
 
       <h2>Veri</h2>
       <div class="box">
-        <p><b>CSV içe aktar</b> — sütunlar: <code>ad, telefon, tarih, marka, model, fiyat</code> (isteğe bağlı: <code>sehir, eposta</code>).
-          Her satır bir alımdır; aynı ad+telefon tek müşteri sayılır. Tarih: <code>2016-05-20</code> veya <code>20.05.2016</code>.</p>
-        <input type="file" id="csv" accept=".csv,text/csv"> <button id="btn-import">İçe aktar</button>
+        <p><b>📂 Kendi müşteri listenizi ekleyin (CSV / Excel)</b></p>
+        <p class="muted">Excel'de listeyi açın → <i>Farklı Kaydet → CSV UTF-8</i>. Her satır bir araç alımıdır; aynı ad+telefon tek müşteri sayılır.
+          Daha önce eklenmiş alımlar tekrar eklenmez, yani aynı dosyayı güncelleyip yeniden yükleyebilirsiniz.</p>
+        <table class="mini" style="margin-bottom:10px">
+          <tr><th>Zorunlu</th><td><code>ad</code>, <code>tarih</code> (alış tarihi — boşsa sadece müşteri eklenir)</td></tr>
+          <tr><th>İsteğe bağlı</th><td><code>telefon, eposta, sehir, adres, dogum_tarihi, tercih, marka, model, model_yili, fiyat, not</code></td></tr>
+          <tr><th>Tarih</th><td><code>2016-05-20</code> veya <code>20.05.2016</code> · Fiyat: <code>1.250.000</code> veya <code>1250000</code></td></tr>
+          <tr><th>tercih</th><td><code>telefon, ziyaret, hediye, whatsapp, eposta, davet</code></td></tr>
+        </table>
+        <input type="file" id="csv" accept=".csv,text/csv"> <button class="primary" id="btn-import">İçe aktar</button>
+        <a href="/static/sablon.csv" download="musteri-sablon.csv"><button type="button">Boş şablonu indir</button></a>
       </div>
       <div class="box">
-        <p><b>Örnek veri</b> — programı denemek için 5 örnek müşteri ekler.</p>
-        <button id="btn-demo">Örnek veri yükle</button>
+        <p><b>📋 Hazır müşteri listesi</b> — 32 müşteri, 67 araç alımı (sık değiştiren, 10 yıldır aynı aracı kullanan, VIP, yeni müşteri, aday…).
+          Programı gerçekçi bir listeyle denemek için.</p>
+        <button id="btn-sample">Hazır listeyi yükle</button>
+        <button id="btn-demo">Sadece 5 örnek müşteri ekle</button>
+      </div>
+      <div class="box">
+        <p><b>💾 Yedek / dışa aktar</b> — tüm müşteri listesini alımlarıyla birlikte Excel'de açılabilen CSV olarak indirir
+          (aynı dosya yukarıdan geri yüklenebilir).</p>
+        <a href="/api/export"><button type="button">Müşteri listesini indir</button></a>
       </div>
     </section>
   </main>
