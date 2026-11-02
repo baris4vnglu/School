@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auto CRM</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">🚗 Auto CRM <span>Customer History &amp; Upgrade Tracking</span></div>
+    <nav>
+      <button data-tab="leads" class="active">📋 To Contact</button>
+      <button data-tab="customers">👥 Customers</button>
+      <button data-tab="media">🎬 Media</button>
+      <button data-tab="settings">⚙️ Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Leads -->
+    <section id="tab-leads" class="tab active">
+      <div class="stats" id="stats"></div>
+      <h2>Who should we contact today?</h2>
+      <p class="muted">Customers whose time to change cars has come or is coming soon, based on their purchase history, in priority order.</p>
+      <div id="leads" class="cards"></div>
+    </section>
+
+    <!-- Customers -->
+    <section id="tab-customers" class="tab">
+      <div class="toolbar">
+        <input id="search" placeholder="Search by name, phone or city…">
+        <button class="primary" id="btn-new">+ New Customer</button>
+      </div>
+      <table class="list">
+        <thead><tr><th>Customer</th><th>Phone</th><th>City</th><th>Purchases</th><th>Current car</th><th>Segment</th><th>Status</th></tr></thead>
+        <tbody id="customer-rows"></tbody>
+      </table>
+    </section>
+
+    <!-- Media -->
+    <section id="tab-media" class="tab">
+      <h2>30-second ad video</h2>
+      <p class="muted">Play it on the showroom screen, post it on social media, or send a personalised version to a customer on WhatsApp.</p>
+      <div class="media-grid">
+        <div>
+          <div class="video-wrap">
+            <canvas id="ad-canvas" width="1280" height="720"></canvas>
+            <button id="ad-play" class="play-overlay" aria-label="Play">▶</button>
+          </div>
+          <div class="player-bar">
+            <button id="ad-toggle" class="small">▶ Play</button>
+            <input id="ad-seek" type="range" min="0" max="30" step="0.1" value="0">
+            <span id="ad-time" class="muted">0:00 / 0:30</span>
+            <label class="inline-check"><input type="checkbox" id="ad-music" checked> Music</label>
+          </div>
+        </div>
+        <div class="box media-side">
+          <label>Personalise for a customer
+            <select id="ad-customer"><option value="">— General version (everyone) —</option></select>
+          </label>
+          <p class="muted small-text" id="ad-hint">The general version works for any audience. Pick a customer to show their name and current car in the video.</p>
+          <button class="primary" id="ad-download">⬇ Download this video</button>
+          <div id="ad-progress" class="hidden"><div class="bar"><div></div></div><span class="muted small-text">Recording… the video plays once in real time (30 s).</span></div>
+          <a href="/static/media/ad-30s.mp4" download="ad-30s.mp4"><button type="button">⬇ Ready-made general video (MP4)</button></a>
+          <h4>Message to send with the video</h4>
+          <div class="script" id="ad-caption"></div>
+          <button class="small" id="ad-copy">Copy message</button>
+          <p class="muted small-text">The dealership name, phone and address in the video come from <b>Settings</b>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="tab">
+      <h2>Dealership</h2>
+      <form id="dealer-form" class="grid2">
+        <label>Dealership name<input name="dealer_name"></label>
+        <label>Phone<input name="dealer_phone"></label>
+        <label class="full">Address<input name="dealer_address"></label>
+        <div><button class="primary">Save</button></div>
+      </form>
+
+      <h2>Analysis settings</h2>
+      <form id="settings-form" class="grid2">
+        <label>Default replacement cycle for one-time buyers (years)<input name="default_cycle_years" type="number" step="0.5" min="1"></label>
+        <label>Add to the contact list this many days before the expected date<input name="due_window_days" type="number" min="0"></label>
+        <label>Keep a contacted customer in the background for (days)<input name="cooldown_days" type="number" min="0"></label>
+        <label>Minimum number of purchases for VIP<input name="vip_purchase_count" type="number" min="1"></label>
+        <label>Total spend for VIP (TL)<input name="vip_total_spend" type="number" min="0" step="10000"></label>
+        <div><button class="primary">Save</button></div>
+      </form>
+
+      <h2>Data</h2>
+      <div class="box">
+        <p><b>📂 Add your own customer list (CSV / Excel)</b></p>
+        <p class="muted">Open your list in Excel → <i>Save As → CSV UTF-8</i>. Each row is one car purchase; the same name + phone counts as one customer.
+          Purchases already added are never added twice, so you can update the same file and upload it again.</p>
+        <table class="mini" style="margin-bottom:10px">
+          <tr><th>Required</th><td><code>name</code>, <code>purchase_date</code> (if empty, only the customer is added)</td></tr>
+          <tr><th>Optional</th><td><code>phone, email, city, address, birth_date, preferred_channel, brand, model, model_year, price, notes</code></td></tr>
+          <tr><th>Dates</th><td><code>2016-05-20</code> or <code>20.05.2016</code> · Price: <code>1.250.000</code> or <code>1250000</code></td></tr>
+          <tr><th>preferred_channel</th><td><code>phone, visit, gift, message, video, email, invite</code></td></tr>
+        </table>
+        <input type="file" id="csv" accept=".csv,text/csv"> <button class="primary" id="btn-import">Import</button>
+        <a href="/static/template.csv" download="customer-template.csv"><button type="button">Download blank template</button></a>
+      </div>
+      <div class="box">
+        <p><b>📋 Ready-made customer list</b> — 32 customers, 67 car purchases (frequent upgraders, people driving the same car for years, VIPs, new buyers, prospects…).
+          Try the app with a realistic list.</p>
+        <button id="btn-sample">Load ready-made list</button>
+        <button id="btn-demo">Add 5 sample customers only</button>
+      </div>
+      <div class="box">
+        <p><b>💾 Backup / export</b> — downloads the whole customer list with purchases as a CSV that opens in Excel
+          (the same file can be imported back above).</p>
+        <a href="/api/export"><button type="button">Download customer list</button></a>
+      </div>
+    </section>
+  </main>
+
+  <!-- Customer detail drawer -->
+  <div id="drawer" class="drawer hidden">
+    <div class="drawer-bg" data-close></div>
+    <div class="drawer-panel">
+      <button class="close" data-close>✕</button>
+      <div id="drawer-body"></div>
+    </div>
+  </div>
+
+  <!-- Customer form -->
+  <dialog id="customer-dialog">
+    <form id="customer-form" method="dialog">
+      <h3 id="customer-form-title">New Customer</h3>
+      <div class="grid2">
+        <label>Full name *<input name="name" required></label>
+        <label>Phone<input name="phone"></label>
+        <label>Email<input name="email" type="email"></label>
+        <label>City<input name="city"></label>
+        <label class="full">Address<input name="address"></label>
+        <label>Date of birth<input name="birth_date" type="date"></label>
+        <label>Preferred contact<select name="preferred_channel" data-channels="optional"></select></label>
+        <label class="full">Notes<textarea name="notes" rows="2"></textarea></label>
+      </div>
+      <div class="actions">
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button class="primary" value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast"></div>
+  <script src="/static/ad.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

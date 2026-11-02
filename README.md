@@ -68,3 +68,7 @@ Tarayıcıda **http://localhost:8000** adresini açın.
 ```bash
 OLLAMA_MODEL=qwen2.5vl:3b uvicorn backend.app:app --port 8000
 ```
+
+---
+
+> 🚗 This repo also contains a customer tracking app for car dealerships: [`auto-crm/`](auto-crm/README.md)
